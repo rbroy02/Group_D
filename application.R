@@ -1,10 +1,13 @@
 library(shiny)
 
+source("model_engine.R")
+
+
 # UI
 
 ui <- fluidPage(
   
-  titlePanel("Stock Returns: OLS vs LMS Regression"),
+  titlePanel("Stock Return Regression"),
   
   tabsetPanel(
     
@@ -70,7 +73,7 @@ ui <- fluidPage(
             
             actionButton(
               "fit_models",
-              "Fit Regression Models",
+              "Fit Regression Model",
               width = "100%"
             )
           )
@@ -137,23 +140,22 @@ ui <- fluidPage(
       
       br(),
       
-      h2("OLS vs LMS Regression"),
+      h2("Stock Return Regression"),
       
       p(
-        "This section will compare Ordinary Least Squares
-         regression with Least Median of Squares robust
-         regression."
+        "This section displays an Ordinary Least Squares
+         regression model fitted using R's optim function."
       ),
       
       hr(),
       
       
-      # OLS & LMS info
+      # OLS info
       
       fluidRow(
         
         column(
-          width = 6,
+          width = 12,
           
           wellPanel(
             
@@ -174,44 +176,19 @@ ui <- fluidPage(
               "ols_coefficients"
             )
           )
-        ),
-        
-        
-        column(
-          width = 6,
-          
-          wellPanel(
-            
-            h3("Least Median of Squares"),
-            
-            p(
-              "LMS is a robust regression approach that
-               minimises the median of the squared residuals."
-            ),
-            
-            strong("Objective:"),
-            
-            p(
-              "Minimise the Median of Squared Residuals"
-            ),
-            
-            tableOutput(
-              "lms_coefficients"
-            )
-          )
         )
       ),
       
       hr(),
       
-
-      # Model comparison
       
-      h2("Model Comparison"),
+      # Regression plot
+      
+      h2("Regression Plot"),
       
       p(
-        "This visualisation will compare the fitted behaviour
-         of the OLS and LMS models."
+        "This visualisation shows the relationship between
+         the selected response and explanatory variable."
       ),
       
       plotOutput(
@@ -221,14 +198,14 @@ ui <- fluidPage(
       
       hr(),
       
- 
+      
       # Actual vs Fitted
       
       h2("Actual vs Fitted Returns"),
       
       p(
-        "This plot will compare the observed return of the
-         target stock with the returns predicted by each
+        "This plot compares the observed return of the
+         target stock with the returns predicted by the
          regression model."
       ),
       
@@ -284,17 +261,22 @@ ui <- fluidPage(
         
         hr(),
         
-        h3("OLS vs LMS"),
+        h3("R-squared"),
         
         p(
-          "If the data contain few unusual observations,
-           OLS and LMS may produce similar fitted models."
+          "R-squared represents the proportion of variation
+           in the target stock's return that is explained by
+           the selected predictor variables."
         ),
         
+        hr(),
+        
+        h3("Residuals"),
+        
         p(
-          "If extreme stock returns are present, OLS may be
-           influenced more strongly by those observations,
-           while LMS is designed to be more resistant to them."
+          "Residuals represent the difference between the
+           observed return and the return predicted by the
+           regression model."
         )
       ),
       
@@ -360,7 +342,8 @@ server <- function(input, output, session) {
     selectInput(
       "response",
       "Target Stock / Response Variable:",
-      choices = numeric_variables
+      choices = numeric_variables,
+      selected = if ("AAPL" %in% numeric_variables) "AAPL"
     )
   })
   
@@ -376,11 +359,202 @@ server <- function(input, output, session) {
       sapply(data, is.numeric)
     ]
     
+    # Remove response variable from predictor choices
+    predictor_variables <- setdiff(
+      numeric_variables,
+      input$response
+    )
+    
     selectInput(
       "explanatory",
       "Predictor Stocks / Explanatory Variables:",
-      choices = numeric_variables,
+      choices = predictor_variables,
+      selected = intersect(
+        c("SPY", "QQQ", "XLK"),
+        predictor_variables
+      ),
       multiple = TRUE
+    )
+  })
+  
+  
+  # Fit regression model
+  
+  model_result <- eventReactive(input$fit_models, {
+    
+    req(input$response)
+    req(input$explanatory)
+    
+    data <- dataset()
+    
+    model_data <- data[
+      complete.cases(
+        data[, c(input$response, input$explanatory)]
+      ),
+    ]
+    
+    fit_model(
+      data = model_data,
+      response = input$response,
+      predictors = input$explanatory
+    )
+  })
+  
+  
+  # Data used for regression
+  
+  model_data <- eventReactive(input$fit_models, {
+    
+    req(input$response)
+    req(input$explanatory)
+    
+    data <- dataset()
+    
+    data[
+      complete.cases(
+        data[, c(input$response, input$explanatory)]
+      ),
+    ]
+  })
+  
+  
+  # Regression coefficients
+  
+  output$ols_coefficients <- renderTable({
+    
+    result <- model_result()
+    
+    data.frame(
+      Variable = names(result$coefficients),
+      Coefficient = round(
+        as.numeric(result$coefficients),
+        6
+      )
+    )
+  })
+  
+  
+  # Regression plot
+  
+  output$regression_plot <- renderPlot({
+    
+    result <- model_result()
+    data <- model_data()
+    
+    validate(
+      need(
+        length(input$explanatory) == 1,
+        "Select exactly one predictor to display the regression plot."
+      )
+    )
+    
+    x <- data[[input$explanatory]]
+    y <- data[[input$response]]
+    
+    plot(
+      x,
+      y,
+      pch = 19,
+      xlab = input$explanatory,
+      ylab = input$response,
+      main = paste(
+        input$response,
+        "vs",
+        input$explanatory
+      )
+    )
+    
+    order_x <- order(x)
+    
+    lines(
+      x[order_x],
+      result$fitted[order_x],
+      lwd = 2
+    )
+  })
+  
+  
+  # Actual vs fitted values
+  
+  output$fitted_plot <- renderPlot({
+    
+    result <- model_result()
+    data <- model_data()
+    
+    actual <- data[[input$response]]
+    
+    plot(
+      actual,
+      type = "l",
+      lwd = 2,
+      xlab = "Observation",
+      ylab = "Return",
+      main = paste(
+        input$response,
+        "- Actual vs Fitted Returns"
+      )
+    )
+    
+    lines(
+      result$fitted,
+      lwd = 2,
+      lty = 2
+    )
+    
+    legend(
+      "topright",
+      legend = c(
+        "Actual",
+        "Fitted"
+      ),
+      lty = c(
+        1,
+        2
+      ),
+      lwd = 2
+    )
+  })
+  
+  
+  # Residual plot
+  
+  output$residual_plot <- renderPlot({
+    
+    result <- model_result()
+    
+    plot(
+      result$residuals,
+      pch = 19,
+      xlab = "Observation",
+      ylab = "Residual",
+      main = "Regression Residuals"
+    )
+    
+    abline(
+      h = 0,
+      lty = 2
+    )
+  })
+  
+  
+  # Regression results
+  
+  output$model_comparison <- renderTable({
+    
+    result <- model_result()
+    
+    data.frame(
+      Statistic = c(
+        "Residual Sum of Squares",
+        "R-squared",
+        "Optim Convergence Code"
+      ),
+      
+      Value = c(
+        round(result$rss, 6),
+        round(result$r_squared, 6),
+        result$convergence
+      )
     )
   })
 }
