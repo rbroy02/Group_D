@@ -84,6 +84,7 @@ fit_model <- function(data, response, predictors) {
     coefficients = coeffs,
     fitted       = fitted,
     residuals    = residuals,
+    y            = y,
     rss          = rss_value,
     r_squared    = r_squared,
     convergence  = fit$convergence
