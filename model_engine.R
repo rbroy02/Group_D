@@ -1,13 +1,14 @@
 # =============================================================================
 # model_engine.R
 #
-# Least-squares regression engine for the stock analysis Shiny app.
-# Coefficients are found by minimising residual sum of squares using optim(),
-# and verified against lm() as a sanity check.
+# Regression engine for the stock analysis Shiny app.
+# Coefficients are found by minimising a residual-based objective using optim().
+# OLS minimises the sum of squared residuals; LMS minimises the median of
+# squared residuals, which is robust to outlier observations.
 #
-# The core functions (model_fits, model_residuals, model_rss) are generalised
-# to accept any number of predictors, satisfying the assessment's Q7 pattern.
-# The fit_model() wrapper is the intended entry point for the Shiny app.
+# The core functions (model_fits, model_residuals, model_rss, model_lms) are
+# generalised to accept any number of predictors, satisfying the assessment's
+# Q7 pattern. The fit_model() wrapper fits OLS by default; fit_lms() fits LMS.
 #
 # USAGE (from server.R):
 #
@@ -15,15 +16,14 @@
 #   data <- read.csv("stock_data_snapshot.csv")
 #   data$date <- as.Date(data$date)
 #
-#   result <- fit_model(data, response = "AAPL",
-#                       predictors = c("SPY", "QQQ", "XLK"))
+#   ols <- fit_model(data, response = "AAPL",
+#                    predictors = c("SPY", "QQQ", "XLK"))
 #
-#   result$coefficients   # named vector, first element is (Intercept)
-#   result$fitted         # predicted values
-#   result$residuals      # observed - predicted
-#   result$rss            # residual sum of squares at the fitted point
-#   result$r_squared      # in-sample goodness of fit
-#   result$convergence    # optim convergence code (0 = converged)
+#   lms <- fit_lms(data, response = "AAPL",
+#                  predictors = c("SPY", "QQQ", "XLK"))
+#
+#   Both return: coefficients, fitted, residuals, y,
+#                rss, r_squared, convergence
 #
 # Optional: train_test_evaluate() splits the data chronologically and reports
 # out-of-sample R^2 for methodology discussion.
@@ -44,14 +44,19 @@ model_residuals <- function(coeffs, X, y) {
   y - model_fits(coeffs, X)
 }
 
-# Objective function passed to optim.
+# OLS objective function passed to optim.
 model_rss <- function(coeffs, X, y) {
   sum(model_residuals(coeffs, X, y)^2)
 }
 
+# LMS objective function passed to optim.
+model_lms <- function(coeffs, X, y) {
+  median(model_residuals(coeffs, X, y)^2)
+}
+
 
 # -----------------------------------------------------------------------------
-# WRAPPER
+# WRAPPER: OLS
 # -----------------------------------------------------------------------------
 
 fit_model <- function(data, response, predictors) {
@@ -78,6 +83,55 @@ fit_model <- function(data, response, predictors) {
   fitted    <- model_fits(coeffs, X)
   residuals <- y - fitted
   rss_value <- fit$value
+  r_squared <- 1 - rss_value / sum((y - mean(y))^2)
+  
+  list(
+    coefficients = coeffs,
+    fitted       = fitted,
+    residuals    = residuals,
+    y            = y,
+    rss          = rss_value,
+    r_squared    = r_squared,
+    convergence  = fit$convergence
+  )
+}
+
+
+# -----------------------------------------------------------------------------
+# WRAPPER: LMS
+# -----------------------------------------------------------------------------
+# LMS uses the same design matrix, but its objective (median of squared
+# residuals) is non-smooth, so we use Nelder-Mead instead of BFGS and start
+# from the OLS solution.
+
+fit_lms <- function(data, response, predictors) {
+  
+  # Build design matrix X (with intercept column) and response vector y
+  predictor_data <- data[, predictors, drop = FALSE]
+  X <- cbind(1, as.matrix(predictor_data))
+  y <- data[[response]]
+  
+  # Start from the OLS solution so Nelder-Mead has a sensible launch point
+  ols <- fit_model(data, response, predictors)
+  start <- ols$coefficients
+  
+  # Fit by minimising the median of squared residuals
+  fit <- optim(
+    par     = start,
+    fn      = model_lms,
+    X       = X,
+    y       = y,
+    method  = "Nelder-Mead",
+    control = list(maxit = 5000, reltol = 1e-10)
+  )
+  
+  # Package results
+  coeffs <- fit$par
+  names(coeffs) <- c("(Intercept)", predictors)
+  
+  fitted    <- model_fits(coeffs, X)
+  residuals <- y - fitted
+  rss_value <- sum(residuals^2)
   r_squared <- 1 - rss_value / sum((y - mean(y))^2)
   
   list(
@@ -137,10 +191,9 @@ train_test_evaluate <- function(data, response, predictors, train_frac = 0.8) {
 # TEST BLOCK
 # -----------------------------------------------------------------------------
 # Runs only when the script is sourced interactively (not when loaded by the
-# Shiny app). Confirms the engine matches lm() and reports out-of-sample fit.
+# Shiny app). Confirms the engine matches lm() and compares OLS with LMS.
 
 if (interactive()) {
-  
   # Load snapshot data (expected to be in the same working directory)
   snapshot_path <- "stock_data_snapshot.csv"
   if (!file.exists(snapshot_path)) {
@@ -155,22 +208,33 @@ if (interactive()) {
   cat("Loaded", nrow(data), "rows spanning",
       format(min(data$date)), "to", format(max(data$date)), "\n\n")
   
-  # --- Full-sample fit ---
-  result <- fit_model(data, response = "AAPL",
-                      predictors = c("SPY", "QQQ", "XLK"))
+  # --- OLS fit ---
+  ols <- fit_model(data, response = "AAPL",
+                   predictors = c("SPY", "QQQ", "XLK"))
   
-  cat("optim coefficients:\n")
-  print(round(result$coefficients, 6))
+  cat("OLS coefficients:\n")
+  print(round(ols$coefficients, 6))
   
   cat("\nlm coefficients (for verification):\n")
   print(round(coef(lm(AAPL ~ SPY + QQQ + XLK, data = data)), 6))
   
-  cat("\nIn-sample R-squared:", round(result$r_squared, 4), "\n")
-  cat("optim convergence code:", result$convergence,
-      "(0 = converged)\n")
+  cat("\nOLS R-squared:", round(ols$r_squared, 4), "\n")
+  cat("OLS convergence code:", ols$convergence,
+      "(0 = converged)\n\n")
+  
+  # --- LMS fit ---
+  lms <- fit_lms(data, response = "AAPL",
+                 predictors = c("SPY", "QQQ", "XLK"))
+  
+  cat("LMS coefficients:\n")
+  print(round(lms$coefficients, 6))
+  
+  cat("\nLMS R-squared:", round(lms$r_squared, 4), "\n")
+  cat("LMS convergence code:", lms$convergence,
+      "(0 = converged)\n\n")
   
   # --- Chronological train/test evaluation ---
-  cat("\n--- Chronological train/test evaluation ---\n")
+  cat("--- Chronological train/test evaluation (OLS) ---\n")
   
   tt <- train_test_evaluate(data,
                             response = "AAPL",
@@ -193,4 +257,3 @@ if (interactive()) {
     cat("the methodology section of the report.\n")
   }
 }
-
