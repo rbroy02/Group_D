@@ -143,19 +143,20 @@ ui <- fluidPage(
       h2("Stock Return Regression"),
       
       p(
-        "This section displays an Ordinary Least Squares
-         regression model fitted using R's optim function."
+        "This section displays Ordinary Least Squares and
+         Least Median of Squares regression models fitted
+         using R's optim function."
       ),
       
       hr(),
       
       
-      # OLS info
+      # OLS and LMS info
       
       fluidRow(
         
         column(
-          width = 12,
+          width = 6,
           
           wellPanel(
             
@@ -174,6 +175,30 @@ ui <- fluidPage(
             
             tableOutput(
               "ols_coefficients"
+            )
+          )
+        ),
+        
+        column(
+          width = 6,
+          
+          wellPanel(
+            
+            h3("Least Median of Squares"),
+            
+            p(
+              "LMS chooses regression coefficients that
+               minimise the median of squared residuals."
+            ),
+            
+            strong("Objective:"),
+            
+            p(
+              "Minimise the Median of Squared Residuals"
+            ),
+            
+            tableOutput(
+              "lms_coefficients"
             )
           )
         )
@@ -401,6 +426,29 @@ server <- function(input, output, session) {
   })
   
   
+  # Fit LMS regression model
+  
+  lms_result <- eventReactive(input$fit_models, {
+    
+    req(input$response)
+    req(input$explanatory)
+    
+    data <- dataset()
+    
+    model_data <- data[
+      complete.cases(
+        data[, c(input$response, input$explanatory)]
+      ),
+    ]
+    
+    fit_lms(
+      data = model_data,
+      response = input$response,
+      predictors = input$explanatory
+    )
+  })
+  
+  
   # Data used for regression
   
   model_data <- eventReactive(input$fit_models, {
@@ -434,11 +482,28 @@ server <- function(input, output, session) {
   })
   
   
+  # LMS regression coefficients
+  
+  output$lms_coefficients <- renderTable({
+    
+    result <- lms_result()
+    
+    data.frame(
+      Variable = names(result$coefficients),
+      Coefficient = round(
+        as.numeric(result$coefficients),
+        6
+      )
+    )
+  })
+  
+  
   # Regression plot
   
   output$regression_plot <- renderPlot({
     
     result <- model_result()
+    lms <- lms_result()
     data <- model_data()
     
     validate(
@@ -471,6 +536,20 @@ server <- function(input, output, session) {
       result$fitted[order_x],
       lwd = 2
     )
+    
+    lines(
+      x[order_x],
+      lms$fitted[order_x],
+      lwd = 2,
+      lty = 2
+    )
+    
+    legend(
+      "topleft",
+      legend = c("OLS", "LMS"),
+      lty = c(1, 2),
+      lwd = 2
+    )
   })
   
   
@@ -479,6 +558,7 @@ server <- function(input, output, session) {
   output$fitted_plot <- renderPlot({
     
     result <- model_result()
+    lms <- lms_result()
     data <- model_data()
     
     actual <- data[[input$response]]
@@ -501,15 +581,23 @@ server <- function(input, output, session) {
       lty = 2
     )
     
+    lines(
+      lms$fitted,
+      lwd = 2,
+      lty = 3
+    )
+    
     legend(
       "topright",
       legend = c(
         "Actual",
-        "Fitted"
+        "OLS Fitted",
+        "LMS Fitted"
       ),
       lty = c(
         1,
-        2
+        2,
+        3
       ),
       lwd = 2
     )
@@ -521,6 +609,7 @@ server <- function(input, output, session) {
   output$residual_plot <- renderPlot({
     
     result <- model_result()
+    lms <- lms_result()
     
     plot(
       result$residuals,
@@ -530,9 +619,20 @@ server <- function(input, output, session) {
       main = "Regression Residuals"
     )
     
+    points(
+      lms$residuals,
+      pch = 4
+    )
+    
     abline(
       h = 0,
       lty = 2
+    )
+    
+    legend(
+      "topright",
+      legend = c("OLS", "LMS"),
+      pch = c(19, 4)
     )
   })
   
@@ -542,6 +642,7 @@ server <- function(input, output, session) {
   output$model_comparison <- renderTable({
     
     result <- model_result()
+    lms <- lms_result()
     
     data.frame(
       Statistic = c(
@@ -550,10 +651,16 @@ server <- function(input, output, session) {
         "Optim Convergence Code"
       ),
       
-      Value = c(
+      OLS = c(
         round(result$rss, 6),
         round(result$r_squared, 6),
         result$convergence
+      ),
+      
+      LMS = c(
+        round(lms$rss, 6),
+        round(lms$r_squared, 6),
+        lms$convergence
       )
     )
   })
