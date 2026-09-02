@@ -1,6 +1,12 @@
+
 library(shiny)
+library(plotly)
 
 source("model_engine.R")
+source("Actual_vs_fitted.R")
+source("Correlation_heatmap.R")
+source("Cumulative_returns.R")
+source("Residuals_vs_fitted.R")
 
 
 # UI
@@ -143,19 +149,20 @@ ui <- fluidPage(
       h2("Stock Return Regression"),
       
       p(
-        "This section displays an Ordinary Least Squares
-         regression model fitted using R's optim function."
+        "This section displays Ordinary Least Squares and
+         Least Median of Squares regression models fitted
+         using R's optim function."
       ),
       
       hr(),
       
       
-      # OLS info
+      # OLS and LMS info
       
       fluidRow(
         
         column(
-          width = 12,
+          width = 6,
           
           wellPanel(
             
@@ -176,6 +183,30 @@ ui <- fluidPage(
               "ols_coefficients"
             )
           )
+        ),
+        
+        column(
+          width = 6,
+          
+          wellPanel(
+            
+            h3("Least Median of Squares"),
+            
+            p(
+              "LMS chooses regression coefficients that
+               minimise the median of squared residuals."
+            ),
+            
+            strong("Objective:"),
+            
+            p(
+              "Minimise the Median of Squared Residuals"
+            ),
+            
+            tableOutput(
+              "lms_coefficients"
+            )
+          )
         )
       ),
       
@@ -194,41 +225,6 @@ ui <- fluidPage(
       plotOutput(
         "regression_plot",
         height = "450px"
-      ),
-      
-      hr(),
-      
-      
-      # Actual vs Fitted
-      
-      h2("Actual vs Fitted Returns"),
-      
-      p(
-        "This plot compares the observed return of the
-         target stock with the returns predicted by the
-         regression model."
-      ),
-      
-      plotOutput(
-        "fitted_plot",
-        height = "400px"
-      ),
-      
-      hr(),
-      
-      
-      # Residuals
-      
-      h2("Residual Comparison"),
-      
-      p(
-        "A residual is the difference between the observed
-         stock return and the fitted stock return."
-      ),
-      
-      plotOutput(
-        "residual_plot",
-        height = "400px"
       ),
       
       hr(),
@@ -288,6 +284,91 @@ ui <- fluidPage(
          of regression methodology and does not provide
          financial or investment advice."
       )
+    ),
+    
+    
+    # Graphs tab
+    
+    tabPanel(
+      "Graphs",
+      
+      br(),
+      
+      h2("Stock Return Graphs"),
+      
+      p(
+        "This section displays the visualisations produced
+         by the graph files used by the application."
+      ),
+      
+      hr(),
+      
+      
+      # Cumulative Stock Returns
+      
+      h2("Cumulative Stock Returns"),
+      
+      p(
+        "This graph displays the cumulative returns of the
+         stocks contained in the uploaded dataset."
+      ),
+      
+      plotlyOutput(
+        "cumulative_return_plot",
+        height = "450px"
+      ),
+      
+      hr(),
+      
+      
+      # Correlation Heatmap
+      
+      h2("Correlation Heatmap"),
+      
+      p(
+        "This graph displays the correlation between the
+         stock-return variables in the uploaded dataset."
+      ),
+      
+      plotlyOutput(
+        "correlation_heatmap",
+        height = "500px"
+      ),
+      
+      hr(),
+      
+      
+      # Actual vs Fitted
+      
+      h2("Actual vs Fitted Returns"),
+      
+      p(
+        "This graph compares the actual observed returns
+         with the fitted returns produced by the regression
+         model."
+      ),
+      
+      plotlyOutput(
+        "fitted_plot",
+        height = "450px"
+      ),
+      
+      hr(),
+      
+      
+      # Residuals vs Fitted
+      
+      h2("Residuals vs Fitted Returns"),
+      
+      p(
+        "This graph displays the residuals from the regression
+         model against the fitted return values."
+      ),
+      
+      plotlyOutput(
+        "residual_plot",
+        height = "450px"
+      )
     )
   )
 )
@@ -324,6 +405,34 @@ server <- function(input, output, session) {
     head(
       data,
       10
+    )
+  })
+  
+  
+  # Cumulative stock returns
+  
+  output$cumulative_return_plot <- renderPlotly({
+    
+    data <- dataset()
+    
+    if ("date" %in% names(data)) {
+      data$date <- as.Date(data$date)
+    }
+    
+    make_cumulative_return_plot(
+      data
+    )
+  })
+  
+  
+  # Correlation heatmap
+  
+  output$correlation_heatmap <- renderPlotly({
+    
+    data <- dataset()
+    
+    make_correlation_heatmap(
+      data
     )
   })
   
@@ -401,6 +510,29 @@ server <- function(input, output, session) {
   })
   
   
+  # Fit LMS regression model
+  
+  lms_result <- eventReactive(input$fit_models, {
+    
+    req(input$response)
+    req(input$explanatory)
+    
+    data <- dataset()
+    
+    model_data <- data[
+      complete.cases(
+        data[, c(input$response, input$explanatory)]
+      ),
+    ]
+    
+    fit_lms(
+      data = model_data,
+      response = input$response,
+      predictors = input$explanatory
+    )
+  })
+  
+  
   # Data used for regression
   
   model_data <- eventReactive(input$fit_models, {
@@ -434,11 +566,28 @@ server <- function(input, output, session) {
   })
   
   
+  # LMS regression coefficients
+  
+  output$lms_coefficients <- renderTable({
+    
+    result <- lms_result()
+    
+    data.frame(
+      Variable = names(result$coefficients),
+      Coefficient = round(
+        as.numeric(result$coefficients),
+        6
+      )
+    )
+  })
+  
+  
   # Regression plot
   
   output$regression_plot <- renderPlot({
     
     result <- model_result()
+    lms <- lms_result()
     data <- model_data()
     
     validate(
@@ -471,68 +620,43 @@ server <- function(input, output, session) {
       result$fitted[order_x],
       lwd = 2
     )
-  })
-  
-  
-  # Actual vs fitted values
-  
-  output$fitted_plot <- renderPlot({
-    
-    result <- model_result()
-    data <- model_data()
-    
-    actual <- data[[input$response]]
-    
-    plot(
-      actual,
-      type = "l",
-      lwd = 2,
-      xlab = "Observation",
-      ylab = "Return",
-      main = paste(
-        input$response,
-        "- Actual vs Fitted Returns"
-      )
-    )
     
     lines(
-      result$fitted,
+      x[order_x],
+      lms$fitted[order_x],
       lwd = 2,
       lty = 2
     )
     
     legend(
-      "topright",
-      legend = c(
-        "Actual",
-        "Fitted"
-      ),
-      lty = c(
-        1,
-        2
-      ),
+      "topleft",
+      legend = c("OLS", "LMS"),
+      lty = c(1, 2),
       lwd = 2
+    )
+  })
+  
+  
+  # Actual vs fitted values
+  
+  output$fitted_plot <- renderPlotly({
+    
+    result <- model_result()
+    
+    make_actual_vs_fitted_plot(
+      result
     )
   })
   
   
   # Residual plot
   
-  output$residual_plot <- renderPlot({
+  output$residual_plot <- renderPlotly({
     
     result <- model_result()
     
-    plot(
-      result$residuals,
-      pch = 19,
-      xlab = "Observation",
-      ylab = "Residual",
-      main = "Regression Residuals"
-    )
-    
-    abline(
-      h = 0,
-      lty = 2
+    make_residuals_vs_fitted_plot(
+      result
     )
   })
   
@@ -542,6 +666,7 @@ server <- function(input, output, session) {
   output$model_comparison <- renderTable({
     
     result <- model_result()
+    lms <- lms_result()
     
     data.frame(
       Statistic = c(
@@ -550,10 +675,16 @@ server <- function(input, output, session) {
         "Optim Convergence Code"
       ),
       
-      Value = c(
+      OLS = c(
         round(result$rss, 6),
         round(result$r_squared, 6),
         result$convergence
+      ),
+      
+      LMS = c(
+        round(lms$rss, 6),
+        round(lms$r_squared, 6),
+        lms$convergence
       )
     )
   })
